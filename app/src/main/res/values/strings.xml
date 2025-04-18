@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OnePlayer</string>
+    <string name="now_playing">Now Playing: %1$s</string>
+</resources>
