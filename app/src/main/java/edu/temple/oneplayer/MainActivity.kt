@@ -1,5 +1,6 @@
 package edu.temple.oneplayer
 
+import android.animation.Animator.AnimatorPauseListener
 import android.app.SearchManager
 import android.content.ComponentName
 import android.content.Context
@@ -26,8 +27,11 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.time.Duration as JavaDuration
 
 class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterface  {
     lateinit var backPressCallback: OnBackPressedCallback
@@ -37,6 +41,7 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
 
     private val PREFS_NAME = "PlaybackState"
     private val POSITION_KEY_PREFIX = "playback_position_"
+    private val PAUSE_TIME_KEY_PREFIX = "pause_time_"
     private lateinit var sharedPreferences: SharedPreferences
 
     private lateinit var progressSeekBar: SeekBar
@@ -45,6 +50,7 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     var mediaControllerBinder: AudioBookPlayerService.MediaControlBinder? = null
     private var currentPlayingBook: Book? = null
     private var latestPlaybackPosition: Int = 0
+    private var lastPauseTime: LocalDateTime? = null
 
     private val downloadExecutor: ExecutorService by lazy {
         Executors.newSingleThreadExecutor()
@@ -248,7 +254,7 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
             val localFile = File(downloadDirectory, "${book_id}.mp3")
 
             if (localFile.exists()) {
-                val savedPosition = getSavedPlaybakcPosition(this)
+                val savedPosition = getSavedPlaybackPositionWithRewind(this)
                 mediaControllerBinder?.run {
                     bookViewModel.setBookPlayed(false)
                     play(this@apply.apply { bookFile = localFile }, savedPosition)
@@ -271,6 +277,8 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     override fun pauseBook() {
         bookViewModel.getPlayingBook()?.value?.let { book->
             savePlaybackPosition(book, latestPlaybackPosition)
+            lastPauseTime = LocalDateTime.now(ZoneOffset.UTC)
+            savePauseTime(book, lastPauseTime)
         }
 
         mediaControllerBinder?.run {
@@ -326,14 +334,57 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
         Log.d("PlaybackState", "Saved position $position for book ${book.title} (${book.book_id})")
     }
 
-    private fun getSavedPlaybakcPosition(book: Book): Int {
+    private fun getSavedPlaybackPosition(book: Book): Int {
         return sharedPreferences.getInt(POSITION_KEY_PREFIX + book.book_id, 0)
+    }
+
+    private fun savePauseTime(book: Book, pauseTime: LocalDateTime?) {
+        pauseTime?.let {
+            sharedPreferences.edit()
+                .putString(PAUSE_TIME_KEY_PREFIX + book.book_id, it.toString())
+                .apply()
+            Log.d("PlaybackState", "Saved pause time for book ${book.title} (${book.book_id}): $it")
+        }
+    }
+
+    private fun getSavedPauseTime(book: Book): LocalDateTime? {
+        val pauseTimeString = sharedPreferences.getString(PAUSE_TIME_KEY_PREFIX + book.book_id, null)
+        return try {
+            LocalDateTime.parse(pauseTimeString)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getSavedPlaybackPositionWithRewind(book: Book): Int {
+        val savedPosition = getSavedPlaybackPosition(book)
+        val pauseTime = getSavedPauseTime(book)
+
+        if (pauseTime != null) {
+            val now = LocalDateTime.now(ZoneOffset.UTC)
+            val durationSincePause = JavaDuration.between(pauseTime, now)
+            val elapsedTimeSeconds = durationSincePause.toSeconds()
+
+            val rewindSeconds = when {
+                elapsedTimeSeconds < 60 -> 5
+                elapsedTimeSeconds < 300 -> 15
+                elapsedTimeSeconds < 3600 -> 30
+                else -> 60
+            }
+
+            val newPosition = (savedPosition - rewindSeconds).coerceAtLeast(0)
+            Log.d("PlaybackState", "Rewinding by $rewindSeconds seconds. Saved position: $savedPosition, new position: $newPosition")
+            return newPosition
+        } else {
+            Log.d("PlaybackState", "No saved pause time found. Starting from saved position: $savedPosition")
+            return savedPosition
+        }
     }
 
     private fun restorePlayback(book: Book) {
         val localFile = File(downloadDirectory, "${book.book_id}.mp3")
         if (localFile.exists()) {
-            val savedPosition = getSavedPlaybakcPosition(book)
+            val savedPosition = getSavedPlaybackPosition(book)
             mediaControllerBinder?.run {
                 bookViewModel.setBookPlayed(true)
                 play(book.apply { bookFile = localFile }, savedPosition)
@@ -346,6 +397,8 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     override fun onDestroy() {
         currentPlayingBook?.let {
             savePlaybackPosition(it, latestPlaybackPosition)
+            lastPauseTime = LocalDateTime.now(ZoneOffset.UTC)
+            savePauseTime(it, lastPauseTime)
         }
         unbindService(bookServiceConnection)
         downloadExecutor.shutdown()
