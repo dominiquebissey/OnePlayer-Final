@@ -33,11 +33,21 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     lateinit var backPressCallback: OnBackPressedCallback
 
     private val searchURL = "https://kamorris.com/lab/audlibplayer/searchbooks.php?query="
+    private val downloadURL = "https://kamorris.com/lab/oneplayer/downloadbook.php?id="
 
     private lateinit var progressSeekBar: SeekBar
     lateinit var bookServiceIntent: Intent
 
     var mediaControllerBinder: AudioBookPlayerService.MediaControlBinder? = null
+
+    private val downloadExecutor: ExecutorService by lazy {
+        Executors.newSingleThreadExecutor()
+    }
+
+    private val downloadDirectory: File by lazy {
+        File(getExternalFilesDir(null), "audiobooks")
+            .apply { if (!exists()) mkdirs() }
+    }
 
     val bookProgressHandler = Handler(Looper.getMainLooper()) {
 
@@ -81,13 +91,6 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     private val bookViewModel : BookViewModel by lazy {
         ViewModelProvider(this)[BookViewModel::class.java]
     }
-
-    private val downloadExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val playbackPositionPrefs: SharedPreferences by lazy {
-        getSharedPreferences("playback_positions", Context.MODE_PRIVATE)
-    }
-
-    private val downloadBaseURL = "https://karlmorris.com/lab/oneplayer/downloadbook.php?id="
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -221,22 +224,27 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
         )
     }
 
-    private fun downloadBook(book: Book) {
-        val downloadURL = downloadBaseURL + book.book_id
-        val fileName = "${book.book_id}.mp3"
-        val downloadFile = File(getExternalFilesDir(null), fileName)
-
-
-    }
-
     override fun playBook() {
         bookViewModel.getSelectedBook()?.value?.apply {
-            mediaControllerBinder?.run {
-                bookViewModel.setBookPlayed(false)
-                play(this@apply)
+            val localFile = File(downloadDirectory, "${book_id}.mp3") // Assuming .mp3 format
 
-                // Start service to ensure it keeps playing even if the activity is destroyed
-                startService(bookServiceIntent)
+            if (localFile.exists()) {
+                // Play from local file
+                mediaControllerBinder?.run {
+                    bookViewModel.setBookPlayed(false)
+                    play(this@apply.apply { bookFile = localFile }, 0) // Start from the beginning
+                    startService(bookServiceIntent)
+                }
+                Toast.makeText(this@MainActivity, "Playing from downloaded file", Toast.LENGTH_SHORT).show()
+            } else {
+                // Stream and download in the background
+                mediaControllerBinder?.run {
+                    bookViewModel.setBookPlayed(false)
+                    play(this@apply)
+                    startService(bookServiceIntent)
+                }
+                Toast.makeText(this@MainActivity, "Streaming and downloading...", Toast.LENGTH_SHORT).show()
+                downloadBookInBackground(this)
             }
         }
     }
@@ -249,8 +257,46 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
         }
     }
 
+    private fun downloadBookInBackground(book: Book) {
+        downloadExecutor.execute {
+            try {
+                val downloadUrl = "${downloadURL}${book.book_id}"
+                val url = URL(downloadUrl)
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connect()
+
+                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                    val inputStream = connection.inputStream
+                    val outputFile = File(downloadDirectory, "${book.book_id}.mp3")
+                    val outputStream = FileOutputStream(outputFile)
+
+                    val buffer = ByteArray(4096)
+                    var bytesRead = -1
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, bytesRead)
+                    }
+                    outputStream.close()
+                    inputStream.close()
+
+                    // Update the Book object with the local file path (optional, for future use)
+                    book.bookFile = outputFile
+                    Log.d("Download", "Book ${book.title} downloaded to ${outputFile.absolutePath}")
+                } else {
+                    Log.e(
+                        "Download",
+                        "Failed to download book ${book.title}. Response code: ${connection.responseCode}"
+                    )
+                }
+                connection.disconnect()
+            } catch (e: Exception) {
+                Log.e("Download", "Error downloading book ${book.title}: ${e.message}")
+            }
+        }
+    }
+
     override fun onDestroy() {
         unbindService(bookServiceConnection)
+        downloadExecutor.shutdown()
         super.onDestroy()
     }
 }
