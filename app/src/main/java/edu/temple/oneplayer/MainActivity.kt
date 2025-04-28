@@ -2,8 +2,10 @@ package edu.temple.oneplayer
 
 import android.app.SearchManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -20,6 +22,12 @@ import com.android.volley.RequestQueue
 import com.android.volley.toolbox.JsonArrayRequest
 import com.android.volley.toolbox.Volley
 import edu.temple.flossaudioplayer.AudioBookPlayerService
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterface  {
     lateinit var backPressCallback: OnBackPressedCallback
@@ -73,6 +81,13 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     private val bookViewModel : BookViewModel by lazy {
         ViewModelProvider(this)[BookViewModel::class.java]
     }
+
+    private val downloadExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val playbackPositionPrefs: SharedPreferences by lazy {
+        getSharedPreferences("playback_positions", Context.MODE_PRIVATE)
+    }
+
+    private val downloadBaseURL = "https://karlmorris.com/lab/oneplayer/downloadbook.php?id="
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -204,6 +219,14 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
                 { bookViewModel.updateBooks(it) },
                 { Toast.makeText(this, it.networkResponse.toString(), Toast.LENGTH_SHORT).show() })
         )
+    }
+
+    private fun downloadBook(book: Book) {
+        val downloadURL = downloadBaseURL + book.book_id
+        val fileName = "${book.book_id}.mp3"
+        val downloadFile = File(getExternalFilesDir(null), fileName)
+
+
     }
 
     override fun playBook() {
