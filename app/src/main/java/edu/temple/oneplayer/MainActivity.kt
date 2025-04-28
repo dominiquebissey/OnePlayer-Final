@@ -23,6 +23,7 @@ import com.android.volley.RequestQueue
 import com.android.volley.toolbox.JsonArrayRequest
 import com.android.volley.toolbox.Volley
 import edu.temple.flossaudioplayer.AudioBookPlayerService
+import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -42,6 +43,7 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     private val PREFS_NAME = "PlaybackState"
     private val POSITION_KEY_PREFIX = "playback_position_"
     private val PAUSE_TIME_KEY_PREFIX = "pause_time_"
+    private val LAST_SEARCH_IDS_KEY = "last_search_book_ids"
     private lateinit var sharedPreferences: SharedPreferences
 
     private lateinit var progressSeekBar: SeekBar
@@ -165,6 +167,8 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
             supportFragmentManager.popBackStack()
         }
 
+        loadLastSearchResults()
+
         // If this is the first time the activity is loading, go ahead and add a BookListFragment
         if (savedInstanceState == null) {
             supportFragmentManager.beginTransaction()
@@ -244,8 +248,55 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     private fun searchBooks(searchTerm: String) {
         requestQueue.add(
             JsonArrayRequest(searchURL + searchTerm,
-                { bookViewModel.updateBooks(it) },
+                {
+                    bookViewModel.updateBooks(it)
+                    saveLastSearchResults(it)
+                },
                 { Toast.makeText(this, it.networkResponse.toString(), Toast.LENGTH_SHORT).show() })
+        )
+    }
+
+    private fun saveLastSearchResults(jsonArray: JSONArray) {
+        val bookIds = mutableListOf<Int>()
+        for (i in 0 until jsonArray.length()) {
+            val book = jsonArray.getJSONObject(i)
+            bookIds.add(book.getInt("book_id"))
+        }
+        val idsString = bookIds.joinToString(",")
+        sharedPreferences.edit().putString(LAST_SEARCH_IDS_KEY, idsString).apply()
+        Log.d("SearchPersistence", "Saved last search IDs: $idsString")
+    }
+
+    private fun loadLastSearchResults() {
+        val savedIdsString = sharedPreferences.getString(LAST_SEARCH_IDS_KEY, null)
+        if (!savedIdsString.isNullOrEmpty()) {
+            val bookIds = savedIdsString.split(",").mapNotNull { it.toIntOrNull() }
+            if (bookIds.isNotEmpty()) {
+                Log.d("SearchPersistence", "Loading last search IDs: $bookIds")
+                fetchAllBooksForPersistedSearch(bookIds)
+            }
+        } else {
+            Log.d("SearchPersistence", "No last search results found")
+        }
+    }
+
+    private fun fetchAllBooksForPersistedSearch(targetIds: List<Int>) {
+        requestQueue.add (
+            JsonArrayRequest(searchURL + "",
+                { response ->
+                    val allFetchedBooks = BookList()
+                    for (i in 0 until response.length()) {
+                        allFetchedBooks.add(Book(response.getJSONObject(i)))
+                    }
+                    bookViewModel.setLastSearchBooks(targetIds, allFetchedBooks)
+                    Log.d(
+                        "SearchPersistence",
+                        "fetched all books for persisted search using empty query."
+                    )
+                },
+                { error->
+                    Toast.makeText(this, "Error fetching all books: ${error.message}", Toast.LENGTH_SHORT).show()
+            })
         )
     }
 

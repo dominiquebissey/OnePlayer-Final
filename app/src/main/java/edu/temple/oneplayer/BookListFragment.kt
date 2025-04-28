@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 class BookListFragment : Fragment() {
 
     private lateinit var bookViewModel : BookViewModel
+    private lateinit var bookAdapter: BookListAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,20 +42,21 @@ class BookListFragment : Fragment() {
             // when the activity is restarted
         }
 
-        with(view as RecyclerView) {
-            layoutManager = LinearLayoutManager(requireActivity())
+        val recyclerView = view as RecyclerView
+        recyclerView.layoutManager = LinearLayoutManager(requireActivity())
 
-            adapter = BookListAdapter(bookViewModel.bookList, onClick)
+        bookAdapter = BookListAdapter(BookList(), onClick)
+        recyclerView.adapter = bookAdapter
 
-            bookViewModel.getUpdatedBookList().observe(requireActivity()) {
-                adapter?.notifyDataSetChanged()
-            }
+        bookViewModel.lastSearchBooks.observe(viewLifecycleOwner) { lastSearchBookList->
+            bookAdapter.updateBookList(lastSearchBookList)
         }
+
 
     }
 
     class BookListAdapter (_bookList: BookList, _onClick: (Book) -> Unit) : RecyclerView.Adapter<BookListAdapter.BookViewHolder>() {
-        private val bookList = _bookList
+        private var bookList = _bookList
         private val onClick = _onClick
 
         inner class BookViewHolder (layout : View): RecyclerView.ViewHolder (layout) {
@@ -80,6 +82,12 @@ class BookListFragment : Fragment() {
 
         override fun getItemCount(): Int {
             return bookList.size()
+        }
+
+        @SuppressLint("NotifyDataSetChanged")
+        fun updateBookList(newList: BookList) {
+            this.bookList = newList
+            notifyDataSetChanged()
         }
 
     }

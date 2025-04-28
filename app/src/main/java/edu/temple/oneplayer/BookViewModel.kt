@@ -28,6 +28,9 @@ class BookViewModel : ViewModel() {
         MutableLiveData()
     }
 
+    private val _lastSearchBooks = MutableLiveData<BookList>()
+    val lastSearchBooks: LiveData<BookList> = _lastSearchBooks
+
     // Flag to determine if one-off event should fire
     private var viewedBook = false
 
@@ -73,10 +76,28 @@ class BookViewModel : ViewModel() {
 
     fun updateBooks (books: JSONArray) {
         bookList.clear()
+        val newSearchList = BookList()
         for (i in 0 until books.length()) {
-            bookList.add(Book(books.getJSONObject(i)))
+            val book = Book(books.getJSONObject(i))
+            bookList.add(book)
+            newSearchList.add(book)
         }
+        _lastSearchBooks.value = newSearchList
         notifyUpdatedBookList()
+    }
+
+    fun setLastSearchBooks(bookIds: List<Int>, allBooks: BookList) {
+        val persistedSearchList = BookList()
+        for (id in bookIds) {
+            for (i in 0 until allBooks.size()) {
+                val book = allBooks[i]
+                if (book.book_id == id) {
+                    persistedSearchList.add(book)
+                    break
+                }
+            }
+        }
+        _lastSearchBooks.value = persistedSearchList
     }
 
     // The indirect observable for those that want to know when
