@@ -35,10 +35,16 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
     private val searchURL = "https://kamorris.com/lab/audlibplayer/searchbooks.php?query="
     private val downloadURL = "https://kamorris.com/lab/oneplayer/downloadbook.php?id="
 
+    private val PREFS_NAME = "PlaybackState"
+    private val POSITION_KEY_PREFIX = "playback_position_"
+    private lateinit var sharedPreferences: SharedPreferences
+
     private lateinit var progressSeekBar: SeekBar
     lateinit var bookServiceIntent: Intent
 
     var mediaControllerBinder: AudioBookPlayerService.MediaControlBinder? = null
+    private var currentPlayingBook: Book? = null
+    private var latestPlaybackPosition: Int = 0
 
     private val downloadExecutor: ExecutorService by lazy {
         Executors.newSingleThreadExecutor()
@@ -59,10 +65,12 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
                 bookViewModel.setBookPlayed(true)
                 bookViewModel.setPlayingBook(book as Book)
                 bookViewModel.setSelectedBook(book as Book)
+                currentPlayingBook = book as Book
             }
 
             // Update seekbar with progress of current book as a percentage
             progressSeekBar.progress = ((progress.toFloat() / (book as Book).duration) * 100).toInt()
+            latestPlaybackPosition = progress
         }
         true
     }
@@ -72,6 +80,7 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             mediaControllerBinder = service as AudioBookPlayerService.MediaControlBinder
             mediaControllerBinder?.setProgressHandler(bookProgressHandler)
+            currentPlayingBook?.let { restorePlayback(it) }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -96,6 +105,8 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        sharedPreferences = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
         val nowPlayingTextView = findViewById<TextView>(R.id.nowPlayingTextView)
         progressSeekBar = findViewById<SeekBar?>(R.id.progressSeekBar).apply {
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
@@ -112,6 +123,8 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
                             mediaControllerBinder?.run {
                                 if (isPlaying) {
                                     seekTo(((progress.toFloat() / 100) * book.duration).toInt())
+                                    latestPlaybackPosition = ((progress.toFloat() / 100) * book.duration).toInt()
+                                    savePlaybackPosition(book, latestPlaybackPosition)
                                 }
                             }
                         }
@@ -181,12 +194,18 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
                         .commit()
                 }
                 bookViewModel.markSelectedBookViewed()
+            } else {
+                currentPlayingBook?.let {
+                    savePlaybackPosition(it, latestPlaybackPosition)
+                }
+                currentPlayingBook = it
             }
         }
 
         // Always show currently playing book
         bookViewModel.getPlayingBook()?.observe(this){
             nowPlayingTextView.text = String.format(getString(R.string.now_playing), it.title)
+            currentPlayingBook = it
         }
 
         findViewById<View>(R.id.searchImageButton).setOnClickListener {
@@ -226,18 +245,17 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
 
     override fun playBook() {
         bookViewModel.getSelectedBook()?.value?.apply {
-            val localFile = File(downloadDirectory, "${book_id}.mp3") // Assuming .mp3 format
+            val localFile = File(downloadDirectory, "${book_id}.mp3")
 
             if (localFile.exists()) {
-                // Play from local file
+                val savedPosition = getSavedPlaybakcPosition(this)
                 mediaControllerBinder?.run {
                     bookViewModel.setBookPlayed(false)
-                    play(this@apply.apply { bookFile = localFile }, 0) // Start from the beginning
+                    play(this@apply.apply { bookFile = localFile }, savedPosition)
                     startService(bookServiceIntent)
                 }
-                Toast.makeText(this@MainActivity, "Playing from downloaded file", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Playing from downloaded file (position: $savedPosition)", Toast.LENGTH_SHORT).show()
             } else {
-                // Stream and download in the background
                 mediaControllerBinder?.run {
                     bookViewModel.setBookPlayed(false)
                     play(this@apply)
@@ -246,13 +264,21 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
                 Toast.makeText(this@MainActivity, "Streaming and downloading...", Toast.LENGTH_SHORT).show()
                 downloadBookInBackground(this)
             }
+            currentPlayingBook = this
         }
     }
 
     override fun pauseBook() {
+        bookViewModel.getPlayingBook()?.value?.let { book->
+            savePlaybackPosition(book, latestPlaybackPosition)
+        }
+
         mediaControllerBinder?.run {
-            if (isPlaying) stopService(bookServiceIntent)
-            else startService(bookServiceIntent)
+            if (isPlaying) {
+                stopService(bookServiceIntent)
+            } else {
+                startService(bookServiceIntent)
+            }
             pause()
         }
     }
@@ -278,7 +304,6 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
                     outputStream.close()
                     inputStream.close()
 
-                    // Update the Book object with the local file path (optional, for future use)
                     book.bookFile = outputFile
                     Log.d("Download", "Book ${book.title} downloaded to ${outputFile.absolutePath}")
                 } else {
@@ -294,7 +319,34 @@ class MainActivity : AppCompatActivity(), BookControlFragment.BookControlInterfa
         }
     }
 
+    private fun savePlaybackPosition(book: Book, position: Int) {
+        sharedPreferences.edit()
+            .putInt(POSITION_KEY_PREFIX + book.book_id, position)
+            .apply()
+        Log.d("PlaybackState", "Saved position $position for book ${book.title} (${book.book_id})")
+    }
+
+    private fun getSavedPlaybakcPosition(book: Book): Int {
+        return sharedPreferences.getInt(POSITION_KEY_PREFIX + book.book_id, 0)
+    }
+
+    private fun restorePlayback(book: Book) {
+        val localFile = File(downloadDirectory, "${book.book_id}.mp3")
+        if (localFile.exists()) {
+            val savedPosition = getSavedPlaybakcPosition(book)
+            mediaControllerBinder?.run {
+                bookViewModel.setBookPlayed(true)
+                play(book.apply { bookFile = localFile }, savedPosition)
+                startService(bookServiceIntent)
+            }
+            Log.d("PlaybackState", "Restored position $savedPosition for book ${book.title} (${book.book_id})")
+        }
+    }
+
     override fun onDestroy() {
+        currentPlayingBook?.let {
+            savePlaybackPosition(it, latestPlaybackPosition)
+        }
         unbindService(bookServiceConnection)
         downloadExecutor.shutdown()
         super.onDestroy()
